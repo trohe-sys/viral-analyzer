@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Вирал-Анализатор</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0a0f; color: #e8e6e0; font-family: Georgia, serif; }
+input, textarea, button { font-family: inherit; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0a0a0f; }
+::-webkit-scrollbar-thumb { background: #2a2040; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect } = React;
+
+const NICHES = ["Шпионаж/История", "Шпионаж/Польша", "Психология", "Мифология", "Наука/Треш"];
+const AI_MODEL_OPENROUTER = "x-ai/grok-4.1-fast";
+const AI_MODEL_PROXY = "claude-sonnet-4-6";
+const AI_PRICE_INP = 0.27;
+const AI_PRICE_OUT = 0.41;
+
+const SYSTEM_PROMPT = `Ты эксперт по виральному YouTube-контенту для русскоязычной аудитории. Специализация: шпионаж/история, психология, мифология, наука/треш.
+
+Получишь список YouTube-видео конкурентов. Создай БОЛЕЕ СИЛЬНЫЙ пакет.
+
+Ответь ТОЛЬКО валидным JSON одной строкой без переносов строк внутри значений:
+{"analysis":"текст","titles":[{"text":"заголовок","mechanic":"механика","ctr":8},{"text":"заголовок","mechanic":"механика","ctr":7},{"text":"заголовок","mechanic":"механика","ctr":6},{"text":"заголовок","mechanic":"механика","ctr":8},{"text":"заголовок","mechanic":"механика","ctr":7},{"text":"заголовок","mechanic":"механика","ctr":8},{"text":"заголовок","mechanic":"механика","ctr":7},{"text":"заголовок","mechanic":"механика","ctr":6},{"text":"заголовок","mechanic":"механика","ctr":8},{"text":"заголовок","mechanic":"механика","ctr":7}],"thumbnails":[{"visual":"детальный промпт","text":"ТЕКСТ","emotion":"эмоция"},{"visual":"детальный промпт","text":"ТЕКСТ","emotion":"эмоция"},{"visual":"детальный промпт","text":"ТЕКСТ","emotion":"эмоция"}],"combos":[{"title_index":0,"thumb_index":0,"score":9,"reason":"обоснование лучшей связки"},{"title_index":1,"thumb_index":1,"score":7,"reason":"обоснование второй связки"},{"title_index":2,"thumb_index":2,"score":6,"reason":"обоснование третьей связки"}]}
+
+МЕХАНИКИ (разные): Тайна/разоблачение, Личная угроза, Парадокс, Число+обещание, Клиффхэнгер
+
+КРИТЕРИЙ ЛУЧШЕГО ЗАГОЛОВКА — помечай ЛУЧШИЙ тот который одновременно:
+1. Начинается с имени существа/темы (по правилу ниши)
+2. Содержит конкретику — дату, цифру, действие или парадокс
+3. НЕ содержит абстрактных слов сразу после имени: правда, история, тайна, секрет, загадка
+4. Создаёт немедленный вопрос или диссонанс — зритель не может не кликнуть
+Если несколько подходят — выбирай тот где конкретика сильнее
+ЗАГОЛОВКИ: конкретные факты цифры имена, расшифровывать спецназвания
+ПРЕВЬЮ — промпт строго по шаблону ниши:
+- Мифология: "Photorealistic cinematic oil painting style, dark mysticism impasto, [СУЩЕСТВО или СЦЕНА с существом в действии], dark atmospheric background [лес/вода/поле/церковь], [ОСВЕЩЕНИЕ: cold moonlight для славянского / torch light для демонов / blue-green для водных], human figure реагирует на существо для масштаба, large bold text on the LEFT reads exactly [ТЕКСТ] white with dark outline, no other text, LEFT half dark empty"
+- Шпионаж/История: "Photorealistic cinematic shot, [АГЕНТ или АРТЕФАКТ: конкретная поза действие], dark neutral background, dramatic side lighting, cold color grade, large bold text on the LEFT reads exactly [ТЕКСТ] white with dark outline, yellow accent on key word, figure in RIGHT half, LEFT half completely empty dark"
+- Психология: "Photorealistic cinematic portrait, [ЧЕЛОВЕК: эмоция состояние — конкретная поза], split lighting half shadow half light, dark neutral background, large bold text on the LEFT reads exactly [ТЕКСТ] white with dark outline, red accent on key word, face in RIGHT half, LEFT half empty dark"
+- Наука/Треш: Выбирай РАЗНЫЙ тип композиции для каждого превью из этих вариантов:
+  А) "Photorealistic cinematic shot, man holds [НЕБОЛЬШОЙ ОБЪЕКТ] in one hand clearly visible, direct eye contact with camera, calm knowing expression, dark neutral background, soft dramatic lighting, large bold text on the LEFT reads exactly [ТЕКСТ] in 1-2 lines white with dark outline, yellow accent on key word, figure in RIGHT half, LEFT half completely empty dark background" — ТОЛЬКО если объект можно держать в руке
+  Б) "Photorealistic cinematic wide shot, [МАСШТАБНАЯ СЦЕНА: взрыв/завод/катастрофа/разрушения], dramatic lighting, smoke, debris, [ЦВЕТОВАЯ ДОМИНАНТА: оранжевый огонь / серый дым / красный], large bold text on the LEFT reads exactly [ТЕКСТ] in 1-2 lines white with dark outline, yellow accent on key word, LEFT half dark, scene in RIGHT half"
+  В) "Photorealistic cinematic shot, [КОНТРАСТНЫЙ ВИЗУАЛ: безобидный объект рядом с последствиями — мешок удобрений на фоне воронки, газовый баллон на фоне руин], split composition, dark dramatic lighting, large bold text on the LEFT reads exactly [ТЕКСТ] in 1-2 lines white with dark outline, yellow accent on key word"
+ТЕКСТ ПРЕВЬЮ: макс 4 слова CAPS на РУССКОМ языке, без кавычек в поле text. ЗАПРЕЩЕНО писать текст превью на английском.
+ВАЖНО: [ТЕКСТ] в промпте visual = ТОЧНАЯ КОПИЯ поля text (на русском). Пример: если text="СЕЛИТРА УБИВАЕТ", то в промпте пиши "reads exactly СЕЛИТРА УБИВАЕТ". НЕ переводи на английский.
+ОБЯЗАТЕЛЬНО: все 3 превью должны быть ВИЗУАЛЬНО РАЗНЫМИ — разная композиция, разный объект/сцена, разная эмоция. Если все 3 похожи — это провал.
+ЗАПРЕЩЕНО: ШОК НЕВЕРОЯТНО, повтор механик
+
+ВИЗУАЛ СУЩЕСТВА — перед генерацией превью определи архетип по имени:
+- Славянский бог/дух (Чернобог, Велес, Мара) → деревянный идол, ночной лес, языческая эстетика, синий лунный свет
+- Славянское существо (Русалка, Леший, Водяной, Кикимора) → природная среда обитания, туман, ночь, фольклорная эстетика
+- Демон/падший ангел (Асмодей, Azazel, Пазузу) → тёмные крылья, огонь, библейская архитектура
+- Греческий миф (Медуза, Минотавр, Сирены) → мрамор, античная эстетика, Средиземноморье
+- Японская мифология (Кицунэ, Они) → традиционная японская архитектура, сакура, красно-чёрная палитра
+- Ведьма/колдунья → лес, котёл, тёмная сила, средневековая деревня
+- Библейское существо (Нефилимы, Левиафан) → библейская эстетика, пустыня, древние руины
+Если в поле ВИЗУАЛ СУЩЕСТВА есть текст — использовать его вместо архетипа.
+
+ПРАВИЛА ПО НИШАМ:
+- Мифология: ПЕРВОЕ СЛОВО = имя существа (Чернобог, Кощей, Баба Яга, Русалки). ЗАПРЕЩЕНО начинать с Почему/Как/Что/То/Запад/3. Парадокс или тайна в конце.
+- Шпионаж/История: ПЕРВОЕ СЛОВО = имя операции или агента. Дата или страна в заголовке обязательны.
+- Психология: ПЕРВОЕ СЛОВО = ты/твой или эмоция. Личная угроза как основная механика.
+- Наука/Треш: ПЕРВОЕ СЛОВО = цифра или название вещества/явления. Измеримая опасность или рекорд.`;
+
+function App() {
+  const [ytKey, setYtKey] = useState(() => localStorage.getItem("yt_key") || "");
+  const [orKey, setOrKey] = useState(() => localStorage.getItem("or_key") || "");
+  const [baseUrl, setBaseUrl] = useState(() => localStorage.getItem("base_url") || "");
+  const [topic, setTopic] = useState("");
+  const [desc, setDesc] = useState("");
+  const [visual, setVisual] = useState("");
+  const [niche, setNiche] = useState(NICHES[0]);
+  const [mode, setMode] = useState("topic");
+  const [loading, setLoading] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [stage, setStage] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [result, setResult] = useState(null);
+  const [polish, setPolish] = useState(null);
+  const [error, setError] = useState("");
+  const [videos, setVideos] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [ytVis, setYtVis] = useState(false);
+  const [orVis, setOrVis] = useState(false);
+  const [stats, setStats] = useState({ inp: 0, out: 0, ytQ: 0, calls: 0 });
+  const [totalYtQ, setTotalYtQ] = useState(() => parseInt(localStorage.getItem("yt_q_total") || "0"));
+  const logsRef = useRef(null);
+
+  useEffect(() => { if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight; }, [logs]);
+
+  const addLog = (msg, type) => {
+    const t = new Date().toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setLogs(p => [...p, { t, msg, type: type || "info" }]);
+  };
+
+  const addYtQ = (n) => {
+    setStats(p => ({ ...p, ytQ: p.ytQ + n }));
+    setTotalYtQ(p => { const v = p + n; localStorage.setItem("yt_q_total", v); return v; });
+  };
+
+  const callAI = async (userMsg, maxTok) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 60000);
+    const endpoint = (baseUrl || "https://openrouter.ai/api/v1") + "/chat/completions";
+    const model = baseUrl ? AI_MODEL_PROXY : AI_MODEL_OPENROUTER;
+    const isNgrok = endpoint.includes("ngrok");
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + orKey, ...(isNgrok ? { "ngrok-skip-browser-warning": "true" } : {}) },
+      body: JSON.stringify({ model, max_tokens: maxTok || 2000, messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: userMsg }] }),
+      signal: ctrl.signal
+    });
+    clearTimeout(timer);
+    if (!res.ok) { const e = await res.text(); throw new Error("OpenRouter " + res.status + ": " + e.slice(0, 150)); }
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content || "";
+    if (data.usage) setStats(p => ({ ...p, inp: p.inp + (data.usage.prompt_tokens || 0), out: p.out + (data.usage.completion_tokens || 0), calls: p.calls + 1 }));
+    return text;
+  };
+
+  const parseJSON = (raw) => {
+    const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
+    const json = s !== -1 && e !== -1 ? raw.slice(s, e + 1) : raw;
+    return JSON.parse(json);
+  };
+
+  const getKeywords = async (text) => {
+    addLog("→ AI: ключевые слова...");
+    const isPolish = niche === "Шпионаж/Польша";
+    // Извлекаем хэштеги из конца текста — они самые точные
+    const tags = text.match(/#[а-яёa-zА-ЯЁA-Z\u00C0-\u017E]+/gi) || [];
+    const tagWords = tags.slice(0, 8).map(h => h.slice(1)).join(" ");
+    // Сэмплируем начало + середину + конец для длинных текстов
+    let textForAI;
+    if (tagWords.length > 10) {
+      textForAI = tagWords;
+    } else if (text.length > 1500) {
+      const mid = Math.floor(text.length / 2);
+      textForAI = text.slice(0, 500) + "\n...\n" + text.slice(mid - 250, mid + 250) + "\n...\n" + text.slice(-500);
+    } else {
+      textForAI = text;
+    }
+    try {
+      const prompt = isPolish
+        ? `Ты помогаешь искать КОНКУРЕНТОВ на YouTube для видео по этому скрипту.
+Определи основную тему скрипта. Сгенерируй 3 КОРОТКИХ поисковых запроса (по 2-3 слова каждый) на трёх языках — для поиска похожих видео-конкурентов.
+Запросы должны быть РАЗНЫМИ по углу: один — про тему в целом, второй — про конкретное событие/персону из скрипта, третий — про жанр/формат.
+Верни ТОЛЬКО JSON: {"pl":["запрос1","запрос2","запрос3"],"en":["query1","query2","query3"],"ru":["запрос1","запрос2","запрос3"]}
+ЗАПРЕЩЕНО: даты, числа, длинные фразы (макс 3 слова). Игнорируй концовку/анонс следующего видео.\n\n` + textForAI
+        : `Ты помогаешь искать КОНКУРЕНТОВ на YouTube для видео по этому скрипту.
+Определи основную тему. Сгенерируй 3 КОРОТКИХ поисковых запроса (по 2-3 слова каждый) для поиска похожих видео на YouTube.
+Запросы должны быть РАЗНЫМИ по углу: один — общая тема, второй — конкретное событие/персона/вещество из скрипта, третий — жанр (документалка, разбор, топ).
+Верни ТОЛЬКО JSON одной строкой: {"q":["запрос1","запрос2","запрос3"]}
+ЗАПРЕЩЕНО: даты, числа, фразы длиннее 3 слов. Игнорируй концовку/анонс следующего видео. Ниша: ` + niche + `\n\n` + textForAI;
+      const kw = await callAI(prompt, 120);
+      const clean = kw.trim();
+      try {
+        const parsed = parseJSON(clean);
+        if (isPolish && parsed.pl && parsed.en && parsed.ru) {
+          addLog("✓ PL: " + parsed.pl.join(" | ") + "  EN: " + parsed.en.join(" | ") + "  RU: " + parsed.ru.join(" | "), "ok");
+          return parsed;
+        }
+        if (parsed.q && Array.isArray(parsed.q)) {
+          addLog("✓ Запросы: " + parsed.q.join(" | "), "ok");
+          return parsed.q;
+        }
+      } catch(e) {}
+      // Фоллбэк: если AI вернул просто текст
+      const words = clean.split("\n")[0];
+      if (words && words.length > 3 && !words.includes("{")) { addLog("✓ Слова: " + words, "ok"); return [words]; }
+    } catch(e) {}
+    if (tags.length > 0) { const kw = tags.slice(0, 3).map(h => h.slice(1)).join(" "); addLog("⚠ Фоллбэк: " + kw, "info"); return [kw]; }
+    const words = text.replace(/[^а-яёa-z0-9\u00C0-\u017E ]/gi, " ").split(/\s+/).filter(w => w.length > 3).slice(0, 3).join(" ");
+    addLog("⚠ Фоллбэк: " + words, "info");
+    return [words];
+  };
+
+  const fetchWithTimeout = (url, opts, ms = 30000) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  };
+
+  const searchYT = async (q, langParams = "") => {
+    addLog("→ YouTube: " + q);
+    const r = await fetchWithTimeout("https://www.googleapis.com/youtube/v3/search?part=snippet&q=" + encodeURIComponent(q) + "&type=video&maxResults=20&videoDuration=long" + langParams + "&key=" + ytKey, {}, 20000);
+    if (!r.ok) throw new Error("YouTube " + r.status + " — проверь ключ");
+    const d = await r.json();
+    if (!d.items?.length) throw new Error("YouTube не нашёл видео: " + q);
+    addYtQ(100); addLog("✓ YouTube: " + d.items.length + " видео (квота -100)", "ok");
+    const ids = d.items.map(i => i.id.videoId).join(",");
+    const r2 = await fetchWithTimeout("https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=" + ids + "&key=" + ytKey, {}, 20000);
+    const d2 = await r2.json();
+    addYtQ(1); addLog("✓ Статистика (квота -1)", "ok");
+    return d2.items.map(v => ({ title: v.snippet.title, views: parseInt(v.statistics.viewCount || 0), channel: v.snippet.channelTitle, thumbnail: v.snippet.thumbnails?.high?.url || v.snippet.thumbnails?.default?.url || "" })).sort((a, b) => b.views - a.views).slice(0, 15);
+  };
+
+  const analyzeThumbnails = async (vids) => {
+    const top5 = vids.filter(v => v.thumbnail).slice(0, 5);
+    if (!top5.length) return "";
+    addLog("→ Vision: анализирую превью конкурентов...");
+    try {
+      const imageContents = top5.flatMap((v, i) => ([
+        { type: "text", text: (i+1) + ". \"" + v.title + "\" — " + v.views.toLocaleString() + " просм." },
+        { type: "image_url", image_url: { url: v.thumbnail } }
+      ]));
+      const vEndpoint = (baseUrl || "https://openrouter.ai/api/v1") + "/chat/completions";
+      const vModel = baseUrl ? AI_MODEL_PROXY : "openai/gpt-4o-mini";
+      const isNgrokV = vEndpoint.includes("ngrok");
+      const r = await fetchWithTimeout(vEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + orKey, ...(isNgrokV ? { "ngrok-skip-browser-warning": "true" } : {}) },
+        body: JSON.stringify({
+          model: vModel,
+          max_tokens: 600,
+          messages: [{ role: "user", content: [
+            { type: "text", text: "Ты аналитик YouTube превью. Посмотри на эти превью конкурентов и ответь на 3 вопроса:\n1. ПАТТЕРНЫ: какие визуальные приёмы повторяются у видео с наибольшим числом просмотров? (тип объекта, расположение, цвета, стиль)\n2. ТЕКСТ: какие слова и формулы текста на превью встречаются у топовых видео?\n3. ЧТО ОТЛИЧАЕТ ТОПОВЫЕ: чем превью с 1М+ просмотрами визуально отличается от превью с 5К просмотрами?\nОтвет краткий, конкретный, без лишних слов." },
+            ...imageContents
+          ]}]
+        })
+      });
+      if (!r.ok) { addLog("⚠ Vision недоступен", "info"); return ""; }
+      const d = await r.json();
+      const vDesc = d.choices?.[0]?.message?.content || "";
+      addLog("✓ Vision: превью проанализированы", "ok");
+      return vDesc ? "\n\nАНАЛИЗ ПРЕВЬЮ ТОПОВЫХ КОНКУРЕНТОВ (используй эти паттерны при генерации своих превью):\n" + vDesc + "\nВАЖНО: твои превью-промпты должны адаптировать winning паттерны топовых видео, а не копировать шаблон." : "";
+    } catch(e) { addLog("⚠ Vision: " + e.message, "info"); return ""; }
+  };
+
+  const analyze = async (vids) => {
+    const vtxt = vids.map((v, i) => (i+1) + ". \"" + v.title + "\" — " + v.views.toLocaleString() + " просм.").join("\n");
+    const visualCtx = (mode === "desc" && visual) ? "🎨 ВИЗУАЛ СУЩЕСТВА ДЛЯ ПРЕВЬЮ: " + visual + "\n\n" : "";
+    const ctx = mode === "desc" ? "Описание ролика:\n" + visualCtx + desc + "\n\n" : "Тема: " + topic + "\n\n";
+    const thumbAnalysis = await Promise.race([
+      analyzeThumbnails(vids),
+      new Promise(r => setTimeout(() => { addLog("⚠ Vision таймаут — пропускаю", "info"); r(""); }, 45000))
+    ]);
+    const msg = "Ниша: " + niche + "\n" + ctx + "Конкуренты:\n" + vtxt + thumbAnalysis + "\n\nСоздай виральный пакет.";
+    addLog("→ AI: анализирую " + vids.length + " видео...");
+    const raw = await callAI(msg, 2000);
+    addLog("✓ Ответ получен", "ok");
+    return parseJSON(raw);
+  };
+
+  const adaptPolish = async () => {
+    if (!result) return;
+    setTranslating(true);
+    try {
+      const titles = result.titles.map((t, i) => (i+1) + ". " + t.text).join("\n");
+      const thumbs = result.thumbnails.map((t, i) => (i+1) + ". Текст: " + t.text).join("\n");
+      const msg = `Jesteś ekspertem od polskiego YouTube. Zaadaptuj poniższe tytuły i teksty miniatur na polski.
+
+ZASADY DLA TYTUŁÓW:
+- NIE tłumacz dosłownie — adaptuj kulturowo
+- Zachowaj mechanikę clickbaitu
+- Użyj naturalnego potocznego polskiego
+- Polskie kulturowe wyzwalacze emocjonalne
+
+ZASADY DLA TEKSTÓW MINIATUR (KRYTYCZNE):
+- To są teksty na obrazkach — muszą UDERZAĆ emocjonalnie po polsku
+- NIE tłumacz słowo w słowo — wymyśl polski ekwiwalent emocjonalny
+- Maksymalnie 4 słowa, CAPS
+- Przykłady złej adaptacji: FAŁSZYWY MOSSAD (dosłowne) → dobra: SFAŁSZOWANE AKTA lub PODROBIONY WYWIAD
+- Przykłady złej adaptacji: KGB PISAŁ ZA ONZ (dosłowne) → dobra: KGB KŁAMAŁO ONZ lub FAŁSZ W ONZ
+- Skup się na EMOCJI i SILE uderzenia, nie na znaczeniu literalnym
+- Jeśli oryginał to nazwa operacji — możesz zachować nazwę ale dodaj polski ładunek emocjonalny
+
+Tytuły (${result.titles.length} sztuk):
+${titles}
+
+Teksty miniatur (3 sztuki, maks 4 słowa każdy):
+${thumbs}
+
+Odpowiedz TYLKO jako JSON jedną linią:
+{"titles":[${result.titles.map(() => '{"text":"tytuł po polsku","mechanic":"mechanika","ctr":8}').join(',')}],"thumbnails":[{"text":"TEKST PO POLSKU"},{"text":"TEKST PO POLSKU"},{"text":"TEKST PO POLSKU"}]}`;
+      const raw = await callAI(msg, 1000);
+      addLog("✓ Polska adaptacja gotowa", "ok");
+      setPolish(parseJSON(raw));
+    } catch(e) {
+      addLog("✗ Błąd tłumaczenia: " + e.message, "error");
+    } finally {
+      setTranslating(false);
+    }
+  };
+
+  const run = async () => {
+    const hasInput = mode === "topic" ? topic : desc;
+    if (!ytKey || !orKey || !hasInput) { setError("Заполни все поля"); return; }
+    localStorage.setItem("yt_key", ytKey); localStorage.setItem("or_key", orKey); localStorage.setItem("base_url", baseUrl);
+    setError(""); setResult(null); setPolish(null); setVideos([]); setLogs([]);
+    setStats({ inp: 0, out: 0, ytQ: 0, calls: 0 });
+    setLoading(true); setProgress(5);
+    const isPolish = niche === "Шпионаж/Польша";
+    try {
+      let searches = [];
+      if (mode === "desc") {
+        setStage("Ключевые слова..."); setProgress(15);
+        const kw = await getKeywords(desc);
+        if (isPolish && kw.pl && kw.en && kw.ru) {
+          setStage("Ищу на трёх языках..."); setProgress(25);
+          const plQueries = Array.isArray(kw.pl) ? kw.pl.slice(0, 2) : [kw.pl];
+          const enQueries = Array.isArray(kw.en) ? kw.en.slice(0, 1) : [kw.en];
+          const ruQueries = Array.isArray(kw.ru) ? kw.ru.slice(0, 2) : [kw.ru];
+          searches = [
+            ...plQueries.map(q => searchYT(q, "&relevanceLanguage=pl&regionCode=PL")),
+            ...enQueries.map(q => searchYT(q, "&relevanceLanguage=en")),
+            ...ruQueries.map(q => searchYT(q, "&relevanceLanguage=ru"))
+          ];
+        } else {
+          const queries = (Array.isArray(kw) ? kw : [kw]).slice(0, 3);
+          setStage('Ищу: ' + queries.join(" | ")); setProgress(30);
+          searches = queries.map(q => searchYT(q, ""));
+        }
+      } else {
+        if (isPolish) {
+          setStage("Ищу на трёх языках..."); setProgress(20);
+          searches = [
+            searchYT(topic, "&relevanceLanguage=pl&regionCode=PL"),
+            searchYT(topic + " spy", "&relevanceLanguage=en"),
+            searchYT(topic + " шпионаж", "&relevanceLanguage=ru")
+          ];
+        } else {
+          const q = topic + " " + niche;
+          setStage("Ищу на YouTube..."); setProgress(20);
+          searches = [searchYT(q, ""), searchYT(topic, "")];
+        }
+      }
+      const settled = await Promise.allSettled(searches);
+      const results = settled.filter(r => r.status === "fulfilled").map(r => r.value);
+      settled.filter(r => r.status === "rejected").forEach(r => addLog("⚠ Один поиск не ответил: " + (r.reason?.message || "таймаут"), "info"));
+      if (!results.length) throw new Error("Все поиски провалились — проверь YouTube ключ");
+      const seen = new Set();
+      const combined = results.flat().filter(v => {
+        if (seen.has(v.title)) return false;
+        seen.add(v.title);
+        return true;
+      }).sort((a, b) => b.views - a.views).slice(0, 20);
+      setVideos(combined); setProgress(60); setStage("Найдено " + combined.length + ". Анализирую...");
+      const res = await analyze(combined);
+      setResult(res); setProgress(100); setStage(""); setProgress(0);
+    } catch(e) { setError(e.message); addLog("✗ " + e.message, "error"); }
+    finally { setLoading(false); }
+  };
+
+  const ctrColor = n => n >= 8 ? "#00ff9d" : n >= 6 ? "#ffd166" : "#ff6b6b";
+  const tagStyle = on => ({ background: on ? "#2a1a4a" : "transparent", border: "1px solid " + (on ? "#7b5ea7" : "#2a2040"), color: on ? "#c8a8ff" : "#6b5fa0", padding: "6px 16px", fontSize: "12px", cursor: "pointer", borderRadius: "2px", fontFamily: "monospace" });
+  const runBtnStyle = d => ({ background: d ? "#1a1030" : "linear-gradient(135deg,#3d1f7a,#5a2d9e)", border: "1px solid #7b5ea7", color: d ? "#6b5fa0" : "#e8d8ff", padding: "12px 28px", fontSize: "13px", cursor: d ? "not-allowed" : "pointer", borderRadius: "2px", fontFamily: "monospace", letterSpacing: "2px", whiteSpace: "nowrap" });
+  const inpStyle = { background: "#080812", border: "1px solid #2a2040", color: "#c8c0e0", padding: "10px 12px", fontSize: "13px", borderRadius: "2px", outline: "none", fontFamily: "monospace", width: "100%" };
+  const cardStyle = { background: "#0f0f1a", border: "1px solid #1e1e30", borderRadius: "4px", padding: "20px 24px", marginBottom: "20px" };
+  const lblStyle = { fontSize: "11px", color: "#4a4060", marginBottom: "6px", fontFamily: "monospace", letterSpacing: "2px", display: "block" };
+
+  return (
+    <div style={{ minHeight: "100vh" }}>
+      <div style={{ background: "linear-gradient(135deg,#0d0d1a,#1a0d2e)", borderBottom: "1px solid #2a2040", padding: "28px 40px 24px" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: "14px" }}>
+          <span style={{ fontSize: "11px", letterSpacing: "4px", color: "#6b5fa0", fontFamily: "monospace" }}>CTR//INTEL</span>
+          <h1 style={{ fontSize: "26px", fontWeight: "normal", color: "#f0eef8" }}>Вирал-Анализатор</h1>
+        </div>
+        <p style={{ margin: "6px 0 0", fontSize: "13px", color: "#6b5fa0", fontFamily: "monospace" }}>YouTube Data API + DeepSeek V3.2 Exp (OpenRouter)</p>
+      </div>
+
+      <div style={{ maxWidth: "860px", margin: "0 auto", padding: "32px 24px" }}>
+
+        <div style={cardStyle}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+            {[["YouTube Data API v3", ytKey, setYtKey, "AIza...", ytVis, setYtVis], ["OpenRouter API Key", orKey, setOrKey, "sk-or-...", orVis, setOrVis]].map(([lbl, val, set, ph, vis, sv]) => (
+              <div key={lbl}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ fontSize: "11px", color: "#6b5fa0", fontFamily: "monospace" }}>{lbl}</span>
+                  <button onClick={() => sv(!vis)} style={{ background: "none", border: "none", color: "#4a4060", fontSize: "10px", cursor: "pointer", fontFamily: "monospace" }}>{vis ? "СКРЫТЬ" : "ПОКАЗАТЬ"}</button>
+                </div>
+                <input type={vis ? "text" : "password"} value={val} onChange={e => set(e.target.value)} placeholder={ph} style={inpStyle} />
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: "12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px", alignItems: "center" }}>
+              <span style={{ fontSize: "11px", color: "#6b5fa0", fontFamily: "monospace" }}>BASE URL (пусто = OpenRouter)</span>
+              {baseUrl && <button onClick={() => { setBaseUrl(""); localStorage.removeItem("base_url"); }} style={{ background: "none", border: "none", color: "#ff6b6b", fontSize: "10px", cursor: "pointer", fontFamily: "monospace" }}>СБРОСИТЬ</button>}
+            </div>
+            <input type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="https://xxxx.ngrok-free.app/v1" style={{...inpStyle, borderColor: baseUrl ? "#7b5ea7" : "#2a2040"}} />
+            {baseUrl && <div style={{ fontSize: "10px", color: "#00ff9d", marginTop: "4px", fontFamily: "monospace" }}>● CLIProxyAPI активен</div>}
+          </div>
+          <div style={{ fontSize: "10px", color: "#2a2040", marginTop: "8px", fontFamily: "monospace" }}>Ключи сохраняются в localStorage</div>
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ marginBottom: "14px" }}>
+            <span style={lblStyle}>НИША</span>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              {NICHES.map(n => <button key={n} onClick={() => setNiche(n)} style={tagStyle(niche === n)}>{n}</button>)}
+            </div>
+          </div>
+          <div style={{ marginBottom: "14px" }}>
+            <span style={lblStyle}>РЕЖИМ ВВОДА</span>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button onClick={() => setMode("topic")} style={tagStyle(mode === "topic")}>Тема одной строкой</button>
+              <button onClick={() => setMode("desc")} style={tagStyle(mode === "desc")}>Описание / скрипт</button>
+            </div>
+          </div>
+          {mode === "topic" ? (
+            <div>
+              <span style={lblStyle}>ТЕМА РОЛИКА</span>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <input value={topic} onChange={e => setTopic(e.target.value)} onKeyDown={e => e.key === "Enter" && !loading && run()} placeholder="Например: Операция Фарвелл" style={{ ...inpStyle, flex: 1, fontSize: "15px", color: "#f0eef8" }} />
+                <button onClick={run} disabled={loading} style={runBtnStyle(loading)}>{loading ? "..." : "АНАЛИЗ"}</button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <span style={lblStyle}>ВИЗУАЛ СУЩЕСТВА (необязательно)</span>
+              <input value={visual} onChange={e => setVisual(e.target.value)} placeholder="Например: огромный чёрный идол из дерева с пустыми глазами, лунный свет, туманный лес" style={{ ...inpStyle, fontSize: "13px", color: "#c8c0e8", marginBottom: "8px" }} />
+              <span style={lblStyle}>ОПИСАНИЕ / СКРИПТ РОЛИКА</span>
+              <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={6} placeholder="Вставь описание, тайм-коды, хэштеги..." style={{ ...inpStyle, resize: "vertical", lineHeight: "1.6", color: "#f0eef8" }} />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
+                <button onClick={run} disabled={loading} style={runBtnStyle(loading)}>{loading ? "..." : "АНАЛИЗ"}</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {error && <div style={{ background: "#1a0808", border: "1px solid #4a1515", color: "#ff8080", padding: "12px 16px", borderRadius: "2px", marginBottom: "16px", fontFamily: "monospace", fontSize: "13px" }}>⚠ {error}</div>}
+
+        {loading && stage && (
+          <div style={{ marginBottom: "16px" }}>
+            <div style={{ background: "#0d0d1a", border: "1px solid #2a2040", color: "#7b5ea7", padding: "10px 16px", borderRadius: "2px 2px 0 0", fontFamily: "monospace", fontSize: "13px" }}>◈ {stage}</div>
+            <div style={{ height: "3px", background: "#15152a", overflow: "hidden" }}>
+              <div style={{ height: "100%", background: "linear-gradient(90deg,#5a2d9e,#9b6dff)", width: progress + "%", transition: "width 0.4s ease" }} />
+            </div>
+          </div>
+        )}
+
+        {logs.length > 0 && (
+          <div ref={logsRef} style={{ background: "#06060e", border: "1px solid #15152a", borderRadius: "4px", padding: "12px 16px", marginBottom: "16px", fontFamily: "monospace", fontSize: "12px", maxHeight: "200px", overflowY: "auto" }}>
+            <div style={{ fontSize: "10px", color: "#4a4060", letterSpacing: "2px", marginBottom: "8px" }}>ЛОГИ</div>
+            {logs.map((l, i) => (
+              <div key={i} style={{ display: "flex", gap: "10px", marginBottom: "3px", color: l.type === "ok" ? "#00ff9d" : l.type === "error" ? "#ff6b6b" : l.type === "dim" ? "#2a2a45" : "#5a6a80" }}>
+                <span style={{ color: "#2a2040", minWidth: "70px" }}>{l.t}</span>
+                <span>{l.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {(stats.inp > 0 || stats.ytQ > 0) && (
+          <div style={{ background: "#0a0a12", border: "1px solid #15152a", borderRadius: "4px", padding: "12px 18px", marginBottom: "16px", display: "flex", gap: "24px", flexWrap: "wrap" }}>
+            {[["AI INPUT", stats.inp.toLocaleString() + " tok", "#c8a8ff"], ["AI OUTPUT", stats.out.toLocaleString() + " tok", "#c8a8ff"], ["СТОИМОСТЬ", "$" + ((stats.inp * AI_PRICE_INP + stats.out * AI_PRICE_OUT) / 1000000).toFixed(5), "#00ff9d"], ["КВОТА СЕССИЯ", stats.ytQ + " / 10000", "#ffd166"], ["КВОТА ИТОГО", totalYtQ + " / 10000", totalYtQ > 8000 ? "#ff6b6b" : "#ffd166"], ["ВЫЗОВОВ", stats.calls, "#c8a8ff"]].map(([lbl, val, color]) => (
+              <div key={lbl} style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                <span style={{ fontSize: "10px", color: "#4a4060", fontFamily: "monospace", letterSpacing: "2px" }}>{lbl}</span>
+                <span style={{ fontSize: "15px", color, fontFamily: "monospace" }}>{val}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {totalYtQ > 0 && !loading && (
+          <div style={{ textAlign: "right", marginBottom: "16px" }}>
+            <button onClick={() => { localStorage.setItem("yt_q_total", "0"); setTotalYtQ(0); }} style={{ background: "none", border: "1px solid #2a2040", color: "#3a3060", padding: "3px 10px", fontSize: "10px", cursor: "pointer", borderRadius: "2px", fontFamily: "monospace" }}>сбросить счётчик квоты</button>
+          </div>
+        )}
+
+        {videos.length > 0 && (
+          <div style={{ marginBottom: "24px" }}>
+            <div style={{ fontSize: "11px", letterSpacing: "3px", color: "#4a4060", fontFamily: "monospace", marginBottom: "10px" }}>НАЙДЕНО НА YOUTUBE — ТОП {videos.length}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "8px", marginBottom: "10px" }}>
+              {videos.slice(0, 10).map((v, i) => (
+                <div key={i} style={{ background: "#0a0a12", border: "1px solid #15152a", borderRadius: "2px", overflow: "hidden" }}>
+                  {v.thumbnail && <img src={v.thumbnail} alt="" style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover" }} />}
+                  <div style={{ padding: "6px 8px" }}>
+                    <div style={{ fontSize: "11px", color: "#9090b8", lineHeight: "1.3", marginBottom: "3px", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{v.title}</div>
+                    <div style={{ fontSize: "10px", color: "#4a4060", fontFamily: "monospace" }}>{v.views.toLocaleString()} просм.</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {result && (
+          <div>
+            <div style={{ background: "#0d0a1a", border: "1px solid #2a1a4a", borderLeft: "3px solid #7b5ea7", padding: "16px 20px", marginBottom: "24px", borderRadius: "0 4px 4px 0" }}>
+              <div style={{ fontSize: "11px", letterSpacing: "3px", color: "#6b5fa0", fontFamily: "monospace", marginBottom: "8px" }}>АНАЛИЗ КОНКУРЕНТОВ</div>
+              <p style={{ fontSize: "14px", lineHeight: "1.6", color: "#c8c0d8" }}>{result.analysis}</p>
+            </div>
+
+            <div style={{ marginBottom: "28px" }}>
+              <div style={{ fontSize: "11px", letterSpacing: "3px", color: "#4a4060", fontFamily: "monospace", marginBottom: "12px" }}>ЗАГОЛОВКИ</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {result.titles?.map((t, i) => {
+                  const combo = result.combos?.find(c => c.title_index === i);
+                  const isTop = result.combos?.[0]?.title_index === i;
+                  return (
+                    <div key={i} style={{ background: isTop ? "#0f0a1e" : "#0a0a12", border: "1px solid " + (isTop ? "#5a2d9e" : "#15152a"), padding: "14px 18px", borderRadius: "2px", display: "flex", alignItems: "center", gap: "16px" }}>
+                      <span style={{ fontSize: "18px", color: "#2a2040", fontFamily: "monospace", minWidth: "24px" }}>{i + 1}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: "15px", color: "#f0eef8", marginBottom: "4px", lineHeight: "1.4" }}>
+                          {t.text}
+                          {combo && <span style={{ marginLeft: "10px", fontSize: "10px", background: "#3d1f7a", color: "#c8a8ff", padding: "2px 8px", borderRadius: "10px", fontFamily: "monospace" }}>СВЯЗКА {result.combos.indexOf(combo) + 1}</span>}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#4a4060", fontFamily: "monospace" }}>{t.mechanic}</div>
+                      </div>
+                      <div style={{ fontSize: "20px", fontWeight: "bold", color: ctrColor(t.ctr), fontFamily: "monospace", minWidth: "30px", textAlign: "right" }}>{t.ctr}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: "28px" }}>
+              <div style={{ fontSize: "11px", letterSpacing: "3px", color: "#4a4060", fontFamily: "monospace", marginBottom: "12px" }}>ПРЕВЬЮ</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "10px" }}>
+                {result.thumbnails?.map((th, i) => {
+                  const combo = result.combos?.find(c => c.thumb_index === i);
+                  const isTop = result.combos?.[0]?.thumb_index === i;
+                  return (
+                    <div key={i} style={{ background: isTop ? "#0f0a1e" : "#0a0a12", border: "1px solid " + (isTop ? "#5a2d9e" : "#15152a"), padding: "16px", borderRadius: "2px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                        <span style={{ fontSize: "11px", color: "#4a4060", fontFamily: "monospace" }}>ПРЕВЬЮ {i + 1}</span>
+                        {combo && <span style={{ fontSize: "10px", background: "#3d1f7a", color: "#c8a8ff", padding: "2px 8px", borderRadius: "10px", fontFamily: "monospace" }}>СВЯЗКА {result.combos.indexOf(combo) + 1}</span>}
+                      </div>
+                      <div style={{ background: "#06060f", border: "1px solid #1a1a2e", padding: "10px 14px", marginBottom: "10px", borderRadius: "2px", textAlign: "center" }}>
+                        <span style={{ fontSize: "16px", fontWeight: "bold", color: "#ffffff", letterSpacing: "1px" }}>{th.text}</span>
+                      </div>
+                      <p style={{ margin: "0 0 8px", fontSize: "12px", color: "#8080a0", lineHeight: "1.6" }}>{th.visual}</p>
+                      <span style={{ fontSize: "10px", background: "#15152a", color: "#6b5fa0", padding: "3px 10px", borderRadius: "10px", fontFamily: "monospace" }}>{th.emotion}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {result.combos?.length > 0 && (
+              <div style={{ marginBottom: "24px" }}>
+                <div style={{ fontSize: "11px", letterSpacing: "3px", color: "#7b5ea7", fontFamily: "monospace", marginBottom: "12px" }}>◈ СВЯЗКИ — ПО УБЫВАНИЮ ОЦЕНКИ</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {result.combos.map((c, i) => (
+                    <div key={i} style={{ background: i === 0 ? "linear-gradient(135deg,#0d0a1e,#150d2a)" : "#0a0a12", border: "1px solid " + (i === 0 ? "#3d2060" : "#1e1e30"), padding: "16px 20px", borderRadius: "4px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                        <div style={{ fontSize: "11px", color: i === 0 ? "#7b5ea7" : "#4a4060", fontFamily: "monospace", letterSpacing: "2px" }}>
+                          {i === 0 ? "◈ СВЯЗКА 1 — ЛУЧШАЯ" : "◈ СВЯЗКА " + (i + 1)}
+                        </div>
+                        <div style={{ fontSize: "22px", fontWeight: "bold", color: ctrColor(c.score), fontFamily: "monospace" }}>{c.score}/10</div>
+                      </div>
+                      <div style={{ marginBottom: "8px" }}>
+                        <strong style={{ color: "#c8a8ff" }}>Заголовок #{c.title_index + 1}</strong>
+                        <span style={{ color: "#6b5fa0", fontSize: "13px" }}> + </span>
+                        <strong style={{ color: "#c8a8ff" }}>Превью #{c.thumb_index + 1}</strong>
+                      </div>
+                      <p style={{ fontSize: "13px", color: "#c8c0d8", lineHeight: "1.6", margin: 0 }}>{c.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: "28px" }}>
+              <button onClick={adaptPolish} disabled={translating} style={{ background: translating ? "#0a1a0a" : "linear-gradient(135deg,#1a3a1a,#2a5a2a)", border: "1px solid #4a8a4a", color: translating ? "#4a6a4a" : "#a0e8a0", padding: "12px 32px", fontSize: "13px", cursor: translating ? "not-allowed" : "pointer", borderRadius: "2px", fontFamily: "monospace", letterSpacing: "2px" }}>
+                {translating ? "..." : "🇵🇱 АДАПТИРОВАТЬ НА ПОЛЬСКИЙ"}
+              </button>
+            </div>
+
+            {polish && (
+              <div style={{ borderTop: "1px solid #1a2a1a", paddingTop: "24px" }}>
+                <div style={{ fontSize: "11px", letterSpacing: "3px", color: "#4a8a4a", fontFamily: "monospace", marginBottom: "16px" }}>🇵🇱 POLSKA ADAPTACJA</div>
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "11px", letterSpacing: "2px", color: "#4a4060", fontFamily: "monospace", marginBottom: "10px" }}>TYTUŁY</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {polish.titles?.map((t, i) => (
+                      <div key={i} style={{ background: "#0a120a", border: "1px solid #1a2a1a", padding: "14px 18px", borderRadius: "2px", display: "flex", alignItems: "center", gap: "16px" }}>
+                        <span style={{ fontSize: "18px", color: "#2a3a2a", fontFamily: "monospace", minWidth: "24px" }}>{i + 1}</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: "15px", color: "#e0f0e0", marginBottom: "4px", lineHeight: "1.4" }}>{t.text}</div>
+                          <div style={{ fontSize: "11px", color: "#4a6a4a", fontFamily: "monospace" }}>{t.mechanic}</div>
+                        </div>
+                        <div style={{ fontSize: "20px", fontWeight: "bold", color: ctrColor(t.ctr), fontFamily: "monospace", minWidth: "30px", textAlign: "right" }}>{t.ctr}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: "11px", letterSpacing: "2px", color: "#4a4060", fontFamily: "monospace", marginBottom: "10px" }}>MINIATURY</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "10px" }}>
+                    {polish.thumbnails?.map((th, i) => (
+                      <div key={i} style={{ background: "#0a120a", border: "1px solid #1a2a1a", padding: "16px", borderRadius: "2px" }}>
+                        <div style={{ background: "#060f06", border: "1px solid #1a2a1a", padding: "10px 14px", borderRadius: "2px", textAlign: "center" }}>
+                          <span style={{ fontSize: "16px", fontWeight: "bold", color: "#ffffff", letterSpacing: "1px" }}>{th.text}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
